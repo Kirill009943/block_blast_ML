@@ -1,0 +1,16 @@
+# CUDA build of PyTorch — install separately for your CUDA version, e.g.:
+#   pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu128
+# (CPU-only torch also works, training is just slower.)
+torch>=2.2
+
+numpy>=1.24
+gymnasium>=0.29
+stable-baselines3>=2.3
+sb3-contrib>=2.3
+pygame>=2.5
+matplotlib>=3.8
+tensorboard>=2.15
+pytest>=8.0
+
+# Optional: only needed for training/optimize.py (hyperparameter search)
+# optuna>=3.6
