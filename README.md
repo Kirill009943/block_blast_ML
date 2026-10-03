@@ -7,7 +7,7 @@ implementation and is split into three independent layers:
 ```
 game/          pure game engine (no I/O, no ML)
 environment/   Gymnasium RL environment (no UI)
-agents/        Random / Heuristic / RL agents
+agents/        Random / Heuristic / Solver / RL agents
 training/      PPO training, evaluation, plotting
 ui/            Pygame interface (human play + AI watch mode)
 ```
@@ -18,7 +18,8 @@ board internals directly; the UI only calls public engine/agent APIs.
 ## How Block Blast works
 
 * The board is 8x8.
-* You have three pieces at a time, drawn randomly from 12 shapes.
+* You have three pieces at a time, drawn randomly from 34 shapes in random
+  rotations (the generator only deals pieces that fit the current board).
 * A piece can be placed on any set of empty cells it fits.
 * Complete rows **and** columns are cleared simultaneously and score points.
 * Once all three pieces are used, three new ones are drawn.
@@ -52,6 +53,7 @@ python main.py                    # Pygame UI, human mode
 python main.py --mode console     # classic text-mode game
 python main.py --mode watch       # watch the best available AI play
 python main.py --mode watch --agent heuristic
+python main.py --mode watch --agent solver    # near-perfect search player
 python main.py --mode watch --agent rl:models/main_final.zip
 ```
 
@@ -141,11 +143,30 @@ and *training steps vs average game score* — saved next to the log file.
 python -m training.evaluate --agent random --games 200
 python -m training.evaluate --agent heuristic --games 100
 python -m training.evaluate --agent rl:models/main_final.zip --games 200
+python -m training.evaluate --agent solver --games 5 --max-moves 2000
 ```
 
 Reports average/median/best/worst score, standard deviation, average game
 length and average lines cleared; appends to
 `results/evaluation_results.csv` and writes a full JSON dump per run.
+`--max-moves` caps game length — required for the **solver**, which
+effectively never reaches game over (see below).
+
+### The solver agent
+
+`agents/solver_agent.py` is a pure search player (no learning): a beam
+search plans the ENTIRE current piece set — every ordering and placement
+of the remaining pieces — and scores complete sequences by lines cleared
+plus board quality (holes, fragmentation, bumpiness, height). Because the
+board-aware generator only deals sequentially viable sets, always playing
+a completing sequence means the solver does not die in practice: it
+survived 3 x 1000-move and 1 x 2500-move test runs (~10.5k score per 1000
+moves, ~550 lines). Two safety nets back the beam search: an exhaustive
+node-budgeted survival DFS (used once per ~3000 moves) and the heuristic
+agent as a last resort. "Never dies" is empirical, not proven — a
+non-viable fallback set is possible in principle. At ~20 ms/move it is
+fine for watching and benchmarking, but do not use it for training
+rollouts.
 
 Baseline results on this machine (200 games each, identical seeds 1000+):
 
@@ -319,7 +340,7 @@ PPO's GPU update + mask-fetch IPC, not the game simulation
 ```
 ├── game/
 │   ├── game.py           # BlockBlastGame engine, GameConfig, MoveResult (cached valid actions)
-│   ├── pieces.py         # the 12 piece shapes, Piece dataclass
+│   ├── pieces.py         # the 34 piece shapes, rotations, Piece dataclass
 │   └── utils.py          # board analysis (holes, regions, heights, ...)
 ├── environment/
 │   ├── block_blast_env.py# Gymnasium env, per-component reward tracking
@@ -329,6 +350,7 @@ PPO's GPU update + mask-fetch IPC, not the game simulation
 │   ├── base.py           # Agent interface + DecisionInfo (debug panel)
 │   ├── random_agent.py
 │   ├── heuristic_agent.py
+│   ├── solver_agent.py   # beam-search planner (near-perfect, no learning)
 │   └── rl_agent.py       # MaskablePPO wrapper (act / value / probabilities)
 ├── training/
 │   ├── cnn_extractor.py  # board CNN for the Cx8x8 observation
@@ -349,7 +371,7 @@ PPO's GPU update + mask-fetch IPC, not the game simulation
 │   ├── pygame_app.py     # human mode, AI watch mode, debug panel
 │   └── brain_app.py      # AI Brain mode (live policy heatmaps)
 ├── models/  results/     # training outputs (created on demand)
-├── tests/                # pytest: engine, env, agents, instrumentation (62 tests)
+├── tests/                # pytest: engine, env, agents, generator, instrumentation (94 tests)
 ├── main.py               # launcher: human / watch / console / brain
 └── requirements.txt
 ```
