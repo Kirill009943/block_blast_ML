@@ -3,6 +3,7 @@
 Single agent:
     python -m training.evaluate --agent random --games 200
     python -m training.evaluate --agent heuristic --games 100
+    python -m training.evaluate --agent solver --games 5 --max-moves 2000
     python -m training.evaluate --agent rl:models/main_final.zip --games 200
 
 Comparison (identical seed sets for every agent):
@@ -33,7 +34,7 @@ CSV_PATH = RESULTS_DIR / "evaluation_results.csv"
 
 
 def build_agent(spec: str, seed: int) -> Agent:
-    """Create an agent from a spec: ``random`` | ``heuristic`` | ``rl:<path>``."""
+    """Create an agent from a spec: ``random`` | ``heuristic`` | ``solver`` | ``rl:<path>``."""
     if spec == "random":
         from agents.random_agent import RandomAgent
 
@@ -42,11 +43,17 @@ def build_agent(spec: str, seed: int) -> Agent:
         from agents.heuristic_agent import HeuristicAgent
 
         return HeuristicAgent()
+    if spec == "solver":
+        from agents.solver_agent import SolverAgent
+
+        return SolverAgent()
     if spec.startswith("rl:"):
         from agents.rl_agent import RLAgent
 
         return RLAgent(spec[3:])
-    raise ValueError(f"Unknown agent spec: {spec!r} (use random | heuristic | rl:<path>)")
+    raise ValueError(
+        f"Unknown agent spec: {spec!r} (use random | heuristic | solver | rl:<path>)"
+    )
 
 
 def short_name(spec: str) -> str:
@@ -74,8 +81,12 @@ def summarize(scores: List[int], moves: List[int], lines: List[int]) -> Dict:
 
 
 def evaluate_agent(spec: str, games: int, base_seed: int = 1000,
-                   progress: bool = True) -> Dict:
-    """Play ``games`` full games and return aggregate statistics + raw data."""
+                   progress: bool = True, max_moves: int = 0) -> Dict:
+    """Play ``games`` full games and return aggregate statistics + raw data.
+
+    ``max_moves`` > 0 caps each game (needed for agents that effectively
+    never reach game over, such as the solver).
+    """
     scores: List[int] = []
     moves: List[int] = []
     lines: List[int] = []
@@ -85,6 +96,8 @@ def evaluate_agent(spec: str, games: int, base_seed: int = 1000,
         game = BlockBlastGame(seed=base_seed + i)
         agent = build_agent(spec, seed=base_seed + i)
         while not game.is_game_over():
+            if max_moves and game.moves >= max_moves:
+                break
             game.place_piece(*agent.act(game))
         scores.append(game.score)
         moves.append(game.moves)
@@ -193,12 +206,14 @@ def plot_comparison(all_stats: List[Dict], out_path: Path) -> Path:
 def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate Block Blast agents.")
     parser.add_argument("--agent", type=str, default=None,
-                        help="random | heuristic | rl:<path-to-model.zip>")
+                        help="random | heuristic | solver | rl:<path-to-model.zip>")
     parser.add_argument("--compare", type=str, nargs="+", default=None,
                         help="evaluate several agents on identical seeds")
     parser.add_argument("--games", type=int, default=200)
     parser.add_argument("--seed", type=int, default=1000,
                         help="base seed; game i uses seed base+i (reproducible)")
+    parser.add_argument("--max-moves", type=int, default=0,
+                        help="cap moves per game (0 = no cap; needed for the solver)")
     parser.add_argument("--quiet", action="store_true")
     return parser.parse_args(argv)
 
@@ -212,7 +227,7 @@ def main(argv: Optional[list] = None) -> List[Dict]:
     all_stats = []
     for spec in specs:
         stats = evaluate_agent(spec, args.games, base_seed=args.seed,
-                               progress=not args.quiet)
+                               progress=not args.quiet, max_moves=args.max_moves)
         print_report(stats)
         save_results(stats)
         all_stats.append(stats)

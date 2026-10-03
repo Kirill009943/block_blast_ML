@@ -105,3 +105,64 @@ def test_rl_agent_with_untrained_model(tmp_path):
     assert action in game.get_valid_actions()
     value = agent.value_estimate(game)
     assert isinstance(value, float)
+
+
+# ---------------------------------------------------------------------- #
+# SolverAgent
+# ---------------------------------------------------------------------- #
+
+from agents import SolverAgent
+
+
+def test_solver_picks_valid_actions():
+    game = BlockBlastGame(seed=0)
+    agent = SolverAgent(beam_width=8)
+    for _ in range(30):
+        if game.is_game_over():
+            break
+        action = agent.act(game)
+        assert action in game.get_valid_actions()
+        game.place_piece(*action)
+
+
+def test_solver_survives_long_games():
+    """With the board-aware generator the solver should never reach game over."""
+    for seed in (0, 1):
+        game = play_game(SolverAgent(beam_width=8), seed=seed, max_moves=300)
+        assert not game.is_game_over(), f"solver died after {game.moves} moves (seed {seed})"
+        assert game.moves == 300
+
+
+def test_solver_is_deterministic():
+    def run(seed):
+        game = play_game(SolverAgent(beam_width=8), seed=seed, max_moves=100)
+        return game.score, game.moves, game.total_lines_cleared
+
+    assert run(7) == run(7)
+
+
+def test_solver_finds_line_clear_ordering():
+    """Row 0 is one domino short of completion: the solver must place a
+    domino at (0,0) — the only move that clears a line."""
+    game = BlockBlastGame(seed=0)
+    game.board[:] = 0
+    for c in range(2, 8):
+        game.board[0, c] = 1
+    game._valid_cache = None
+    domino = make_piece([(0, 0), (0, 1)])
+    set_pieces(game, [domino, domino, None])
+
+    agent = SolverAgent(beam_width=8)
+    action = agent.act(game)
+    assert action[1:] == (0, 0)  # only placement that clears the row
+    result = game.place_piece(*action)
+    assert result.lines_cleared == 1
+    assert not game.is_game_over()
+
+
+def test_solver_decide_reports_search_info():
+    game = BlockBlastGame(seed=0)
+    info = SolverAgent(beam_width=8).decide(game)
+    assert info.action in game.get_valid_actions()
+    assert info.extra["source"] in ("beam", "exhaustive", "greedy")
+    assert info.extra["nodes_expanded"] > 0

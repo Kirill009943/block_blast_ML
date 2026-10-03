@@ -78,7 +78,7 @@ def parse_args() -> argparse.Namespace:
                              "watch: watch an AI play; console: text mode; "
                              "brain: watch the RL agent with live decision visualization")
     parser.add_argument("--agent", type=str, default=None,
-                        help="watch/brain mode agent: heuristic | random | rl:<path> "
+                        help="watch/brain mode agent: heuristic | random | solver | rl:<path> "
                              "(default: best available)")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--ai-delay", type=float, default=0.3,
