@@ -7,7 +7,7 @@ implementation and is split into three independent layers:
 ```
 game/          pure game engine (no I/O, no ML)
 environment/   Gymnasium RL environment (no UI)
-agents/        Random / Heuristic / Solver / RL agents
+agents/        Random / Heuristic / Solver / Imitation / RL agents
 training/      PPO training, evaluation, plotting
 ui/            Pygame interface (human play + AI watch mode)
 ```
@@ -320,6 +320,94 @@ action masks and expert actions; `training/behavior_cloning.py` trains the
 policy with masked cross-entropy and saves a PPO-initialization model.
 Whether BC init actually helps evaluation score is tested as experiment F.
 
+## Imitation learning (demonstrations + behavioral cloning)
+
+A complete system for learning from recorded gameplay — human or
+autonomous. The pipeline:
+
+```
+human play / autonomous agents  ->  demonstration dataset  ->  behavioral
+cloning (masked cross-entropy)  ->  ImitationAgent  ->  optional PPO init
+```
+
+### Collecting demonstrations
+
+```bash
+# human: play normally; every move is recorded before it changes the state
+python main.py --mode record
+# human feedback: the AI suggests a move — A accepts (source human_accepted_ai),
+# placing your own move overrides it (source human, suggestion kept as metadata)
+python main.py --mode feedback --agent heuristic
+# autonomous, headless, thousands of games (any agent spec)
+python -m training.collect_demos --agent heuristic --games 1000
+python -m training.collect_demos --agent rl:models/main_final.zip --games 200
+python -m training.collect_demos --agent solver --games 50 --max-moves 5000
+```
+
+Record mode shows `Game / Steps / Dataset samples / Score`; `R` starts a
+new game without restarting. Only valid actions are recorded. The
+collector flushes completed games to disk every 25 games, so memory stays
+flat; game ids continue across runs.
+
+### Dataset format
+
+Shards `results/demos/shard_*.npz` + `meta.json`. Per sample: bit-packed
+observation `(C,8,8)` (state BEFORE the action), action id (0-191),
+bit-packed action mask, reward (game points), score before, lines cleared,
+game-over flag, source code (`human`, `heuristic`, `ppo`, `solver`,
+`random`, `human_accepted_ai`, `imitation`), game id, step, suggested
+action. Inspect it (sizes, per-source stats, action distribution — the
+bias check):
+
+```bash
+python -m training.dataset_stats
+```
+
+### Training the imitation policy
+
+```bash
+python -m training.train_imitation --source human
+python -m training.train_imitation --source heuristic --epochs 20
+python -m training.train_imitation --source all --weight-human 5.0 --augment
+```
+
+Masked cross-entropy: illegal actions get `-inf` logits before the loss,
+so they never receive probability mass. Per-source sample weights keep a
+small human dataset from being overwhelmed (default: human 5x, others 1x).
+`--augment` adds 4x symmetry copies (horizontal/vertical flip, 180°
+rotation; basic observation profile only — enhanced channels are not
+mirror-symmetric). Metrics per epoch: train/val loss, accuracy, masked
+accuracy, top-3, top-5; the split is BY GAME to prevent leakage. Best
+checkpoint goes to `models/imitation/bc_<source>.pt`.
+
+### Using and evaluating the imitation agent
+
+```bash
+python main.py --mode watch --agent imitation:models/imitation/bc_all.pt
+python -m training.evaluate_imitation --model models/imitation/bc_all.pt --games 200
+```
+
+`evaluate_imitation` compares Random / Heuristic / Imitation (deterministic
+argmax and, with `--stochastic`, the sampling variant) on identical seeds.
+High training accuracy does not imply strong play — the evaluation score
+is the metric that matters.
+
+### Initializing PPO from imitation
+
+The BC network mirrors the PPO policy exactly (same CNN, trunk and action
+head, identical state-dict keys), so a `.pt` checkpoint initializes PPO
+directly — the value head starts random and is learned by PPO:
+
+```bash
+python -m training.train --init-from models/imitation/bc_all.pt --timesteps 10000000
+# or export a .zip first (equivalent):
+python -m training.train_imitation --source all --export-ppo models/imitation/bc_ppo.zip
+python -m training.train --init-from models/imitation/bc_ppo.zip --timesteps 10000000
+```
+
+This is an optional initialization path; it does not replace the existing
+PPO pipeline or models.
+
 ## Performance
 
 Environment and training-loop profiling:
@@ -351,6 +439,7 @@ PPO's GPU update + mask-fetch IPC, not the game simulation
 │   ├── random_agent.py
 │   ├── heuristic_agent.py
 │   ├── solver_agent.py   # beam-search planner (near-perfect, no learning)
+│   ├── imitation_agent.py# behavioral-cloning policy (det./stochastic)
 │   └── rl_agent.py       # MaskablePPO wrapper (act / value / probabilities)
 ├── training/
 │   ├── cnn_extractor.py  # board CNN for the Cx8x8 observation
@@ -364,14 +453,22 @@ PPO's GPU update + mask-fetch IPC, not the game simulation
 │   ├── optimize.py       # optional Optuna HPO
 │   ├── generate_expert_data.py # heuristic -> expert dataset (.npz)
 │   ├── behavior_cloning.py     # masked cross-entropy imitation
+│   ├── demos.py            # DemoRecorder/DemoDataset: shard-based demo storage
+│   ├── collect_demos.py    # headless autonomous demo collection
+│   ├── imitation_model.py  # BC network (PPO-compatible keys) + conversion
+│   ├── train_imitation.py  # behavioral cloning CLI (masked CE, source weights)
+│   ├── augment.py          # symmetry augmentation (basic profile only)
+│   ├── dataset_stats.py    # dataset inspection / bias report
+│   ├── evaluate_imitation.py # imitation vs Random/Heuristic/PPO comparison
 │   ├── profile_performance.py  # env / NN / VecEnv profiler
 │   ├── repro.py          # reproducibility metadata -> config.json
 │   └── plot_results.py   # reward/score learning curves
 ├── ui/
 │   ├── pygame_app.py     # human mode, AI watch mode, debug panel
-│   └── brain_app.py      # AI Brain mode (live policy heatmaps)
+│   ├── brain_app.py      # AI Brain mode (live policy heatmaps)
+│   └── record_app.py     # record mode + human-feedback mode (demo collection)
 ├── models/  results/     # training outputs (created on demand)
-├── tests/                # pytest: engine, env, agents, generator, instrumentation (94 tests)
+├── tests/                # pytest: engine, env, agents, generator, imitation (117 tests)
 ├── main.py               # launcher: human / watch / console / brain
 └── requirements.txt
 ```

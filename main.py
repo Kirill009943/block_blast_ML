@@ -5,6 +5,8 @@ Usage:
     python main.py --mode watch         # watch an AI play (RL if a model exists)
     python main.py --mode watch --agent rl:models/main_final.zip
     python main.py --mode console       # original text-mode game
+    python main.py --mode record        # human training: record demonstrations
+    python main.py --mode feedback      # accept/override AI suggestions (recorded)
 
 The console mode preserves the feel of the original implementation but
 runs on the refactored engine in ``game/``.
@@ -72,17 +74,23 @@ def play_console(seed=None) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Block Blast with a self-learning AI.")
-    parser.add_argument("--mode", choices=["human", "watch", "console", "brain"],
+    parser.add_argument("--mode", choices=["human", "watch", "console", "brain",
+                                           "record", "feedback"],
                         default="human",
                         help="human: play in the Pygame UI (default); "
                              "watch: watch an AI play; console: text mode; "
-                             "brain: watch the RL agent with live decision visualization")
+                             "brain: watch the RL agent with live decision visualization; "
+                             "record: human training mode (records demonstrations); "
+                             "feedback: accept/override AI suggestions (recorded)")
     parser.add_argument("--agent", type=str, default=None,
-                        help="watch/brain mode agent: heuristic | random | solver | rl:<path> "
+                        help="watch/brain/feedback mode agent: heuristic | random | "
+                             "solver | imitation:<path> | rl:<path> "
                              "(default: best available)")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--ai-delay", type=float, default=0.3,
                         help="seconds between AI moves in watch/brain mode")
+    parser.add_argument("--dataset-dir", type=str, default="results/demos",
+                        help="where record/feedback modes save demonstrations")
     return parser.parse_args()
 
 
@@ -110,6 +118,16 @@ def main() -> None:
         from ui.brain_app import run_brain
 
         run_brain(agent, seed=args.seed or 0, ai_delay=args.ai_delay)
+    elif args.mode == "record":
+        from ui.record_app import run_record_app
+
+        run_record_app(dataset_dir=args.dataset_dir, seed=args.seed)
+    elif args.mode == "feedback":
+        from ui.record_app import run_feedback_app
+
+        agent = (build_agent(args.agent, seed=args.seed)
+                 if args.agent else load_default_agent())
+        run_feedback_app(agent, dataset_dir=args.dataset_dir, seed=args.seed)
     else:
         run_app(agent=None, human=True, seed=args.seed)
 

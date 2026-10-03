@@ -34,7 +34,7 @@ CSV_PATH = RESULTS_DIR / "evaluation_results.csv"
 
 
 def build_agent(spec: str, seed: int) -> Agent:
-    """Create an agent from a spec: ``random`` | ``heuristic`` | ``solver`` | ``rl:<path>``."""
+    """Create an agent: ``random`` | ``heuristic`` | ``solver`` | ``rl:<path>`` | ``imitation:<path>``."""
     if spec == "random":
         from agents.random_agent import RandomAgent
 
@@ -51,8 +51,13 @@ def build_agent(spec: str, seed: int) -> Agent:
         from agents.rl_agent import RLAgent
 
         return RLAgent(spec[3:])
+    if spec.startswith("imitation:"):
+        from agents.imitation_agent import ImitationAgent
+
+        return ImitationAgent(spec[len("imitation:"):], seed=seed)
     raise ValueError(
-        f"Unknown agent spec: {spec!r} (use random | heuristic | solver | rl:<path>)"
+        f"Unknown agent spec: {spec!r} "
+        "(use random | heuristic | solver | rl:<path> | imitation:<path>)"
     )
 
 

@@ -126,8 +126,24 @@ def train(config: TrainConfig) -> Tuple[Path, str]:
             seed=config.seed, device=device,
             tensorboard_log=str(RESULTS_DIR / "tensorboard"), verbose=1,
         )
-        source = MaskablePPO.load(config.init_from, device=device)
-        model.policy.load_state_dict(source.policy.state_dict())
+        if str(config.init_from).endswith(".pt"):
+            # behavioral-cloning checkpoint: policy-side keys match the PPO
+            # policy exactly; value head keeps its random init
+            from training.imitation_model import load_imitation_state_dict
+
+            state, meta = load_imitation_state_dict(config.init_from, device=device)
+            bc_channels = int(meta.get("observation_channels", 4))
+            env_channels = int(vec_env.observation_space.shape[0])
+            if bc_channels != env_channels:
+                raise ValueError(
+                    f"BC checkpoint expects {bc_channels} observation channels "
+                    f"but the env provides {env_channels} — match "
+                    f"--observation-profile to the BC model."
+                )
+            model.policy.load_state_dict(state, strict=False)
+        else:
+            source = MaskablePPO.load(config.init_from, device=device)
+            model.policy.load_state_dict(source.policy.state_dict())
     else:
         model = MaskablePPO(
             "MlpPolicy", vec_env, policy_kwargs=policy_kwargs,
