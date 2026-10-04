@@ -4,24 +4,65 @@ Every PPO hyperparameter and run option lives in :class:`TrainConfig` so
 experiments are declared in one place, passed to ``training.train.train``
 programmatically, and serialized to ``config.json`` for reproducibility.
 CLI flags in ``train.py`` map 1:1 onto these fields.
+
+Hyperparameter semantics
+------------------------
+PPO fields are ``Optional``; ``None`` means "auto":
+
+* fresh run / ``--init-from``  -> the built-in defaults below are used;
+* ``--resume``                 -> the values stored in the checkpoint are
+  kept, except the three safely-adjustable knobs (``learning_rate``,
+  ``ent_coef``, ``clip_range``) which are applied to the loaded model when
+  given explicitly.
+
+Timestep semantics
+------------------
+``total_timesteps`` (``--timesteps``) always means **steps trained in this
+session** — matching SB3's ``model.learn(total_timesteps=...)``. When
+resuming a 26M-step model, ``--timesteps 9000000`` trains 9M MORE steps.
+Use ``--until-total`` (``until_total``) to target an absolute total:
+``--until-total 35000000`` trains exactly ``35M - model.num_timesteps``
+additional steps (and refuses to run if the model is already past it).
 """
 
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, fields
 from typing import Any, Dict, Optional
 
 from environment.rewards import REWARD_PROFILES
 
+# Built-in PPO defaults (= the proven 5M baseline configuration behind
+# models/main_final.zip). Used whenever a field is None and no checkpoint
+# supplies a value.
+PPO_DEFAULTS: Dict[str, Any] = dict(
+    learning_rate=3e-4,
+    n_steps=512,
+    batch_size=1024,
+    n_epochs=4,
+    gamma=0.995,
+    gae_lambda=0.95,
+    clip_range=0.2,
+    ent_coef=0.01,
+    vf_coef=0.5,
+    max_grad_norm=0.5,
+)
+
+# Hyperparameters that can safely change on a resumed model (they are
+# re-read every PPO update). Everything else is structural (rollout-buffer
+# shape, gamma baked into the buffer, ...) and comes from the checkpoint.
+RESUMABLE_OVERRIDES = ("learning_rate", "ent_coef", "clip_range")
+
 
 @dataclass
 class TrainConfig:
-    """All knobs for one training run. Defaults = the proven 5M baseline."""
+    """All knobs for one training run. None PPO fields mean "auto"."""
 
     # run setup
     run_name: Optional[str] = None
-    total_timesteps: int = 10_000_000
+    total_timesteps: int = 10_000_000  # steps trained in THIS session
+    until_total: Optional[int] = None  # absolute total target; overrides --timesteps
     n_envs: int = 8
     seed: int = 0
     device: str = "auto"
@@ -33,18 +74,20 @@ class TrainConfig:
     init_from: Optional[str] = None  # e.g. behavior-cloned policy weights
     reward_profile: str = "baseline"
     observation_profile: str = "basic"
+    reward_scale: float = 1.0  # multiplies the reward the optimizer sees
+    share_features_extractor: bool = True  # False = separate pi/vf CNNs
 
-    # PPO hyperparameters (baseline = the configuration behind models/main_final.zip)
-    learning_rate: float = 3e-4
-    n_steps: int = 512
-    batch_size: int = 1024
-    n_epochs: int = 4
-    gamma: float = 0.995
-    gae_lambda: float = 0.95
-    clip_range: float = 0.2
-    ent_coef: float = 0.01
-    vf_coef: float = 0.5
-    max_grad_norm: float = 0.5
+    # PPO hyperparameters (None = auto: defaults, or checkpoint on resume)
+    learning_rate: Optional[float] = None
+    n_steps: Optional[int] = None
+    batch_size: Optional[int] = None
+    n_epochs: Optional[int] = None
+    gamma: Optional[float] = None
+    gae_lambda: Optional[float] = None
+    clip_range: Optional[float] = None
+    ent_coef: Optional[float] = None
+    vf_coef: Optional[float] = None
+    max_grad_norm: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -59,7 +102,11 @@ def add_cli_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     """Register every TrainConfig field as a CLI flag."""
     run = parser.add_argument_group("run")
     run.add_argument("--timesteps", type=int, default=10_000_000,
-                     help="total training timesteps (default: 10,000,000)")
+                     help="steps trained in THIS session; when resuming this "
+                          "is ADDITIONAL steps (default: 10,000,000)")
+    run.add_argument("--until-total", type=int, default=None,
+                     help="absolute total-timestep target; overrides "
+                          "--timesteps (trains until_total - model steps)")
     run.add_argument("--n-envs", type=int, default=8)
     run.add_argument("--seed", type=int, default=0)
     run.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
@@ -69,26 +116,44 @@ def add_cli_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     run.add_argument("--progress-interval", type=float, default=30.0,
                      help="seconds between [timer] progress/ETA lines (0 = off)")
     run.add_argument("--resume", type=str, default=None,
-                     help="checkpoint to continue training from")
+                     help="checkpoint to continue training from; keeps the "
+                          "checkpoint's PPO state (optimizer, timestep "
+                          "counter, hyperparameters). --lr/--ent-coef/"
+                          "--clip-range may override; other PPO flags are ignored.")
     run.add_argument("--init-from", type=str, default=None,
-                     help="model whose weights initialize the new run (e.g. behavior cloning)")
+                     help="model whose POLICY WEIGHTS initialize a fresh run "
+                          "(no optimizer/PPO state is copied)")
     run.add_argument("--reward-profile", type=str, default="baseline",
                      choices=sorted(REWARD_PROFILES))
     run.add_argument("--observation-profile", type=str, default="basic",
                      choices=["basic", "enhanced"])
+    run.add_argument("--reward-scale", type=float, default=1.0,
+                     help="multiply the reward the optimizer sees (component "
+                          "logs stay in raw units); e.g. 0.05 when value_loss "
+                          "is in the thousands")
+    run.add_argument("--separate-value-net", action="store_true",
+                     help="give policy and value their own CNN (prevents a "
+                          "large value gradient from starving the policy "
+                          "through the shared trunk)")
     run.add_argument("--run-name", type=str, default=None)
 
-    ppo = parser.add_argument_group("ppo")
-    ppo.add_argument("--lr", "--learning-rate", dest="learning_rate", type=float, default=3e-4)
-    ppo.add_argument("--n-steps", type=int, default=512)
-    ppo.add_argument("--batch-size", type=int, default=1024)
-    ppo.add_argument("--n-epochs", type=int, default=4)
-    ppo.add_argument("--gamma", type=float, default=0.995)
-    ppo.add_argument("--gae-lambda", type=float, default=0.95)
-    ppo.add_argument("--clip-range", type=float, default=0.2)
-    ppo.add_argument("--ent-coef", type=float, default=0.01)
-    ppo.add_argument("--vf-coef", type=float, default=0.5)
-    ppo.add_argument("--max-grad-norm", type=float, default=0.5)
+    ppo = parser.add_argument_group(
+        "ppo",
+        description="None of these has a CLI default: omitted means the "
+                    "built-in default for fresh runs, or the checkpoint "
+                    "value for --resume (only lr/ent-coef/clip-range may "
+                    "override a resumed checkpoint).",
+    )
+    ppo.add_argument("--lr", "--learning-rate", dest="learning_rate", type=float, default=None)
+    ppo.add_argument("--n-steps", type=int, default=None)
+    ppo.add_argument("--batch-size", type=int, default=None)
+    ppo.add_argument("--n-epochs", type=int, default=None)
+    ppo.add_argument("--gamma", type=float, default=None)
+    ppo.add_argument("--gae-lambda", type=float, default=None)
+    ppo.add_argument("--clip-range", type=float, default=None)
+    ppo.add_argument("--ent-coef", type=float, default=None)
+    ppo.add_argument("--vf-coef", type=float, default=None)
+    ppo.add_argument("--max-grad-norm", type=float, default=None)
     return parser
 
 
@@ -96,6 +161,7 @@ def config_from_args(args: argparse.Namespace) -> TrainConfig:
     return TrainConfig(
         run_name=args.run_name,
         total_timesteps=args.timesteps,
+        until_total=args.until_total,
         n_envs=args.n_envs,
         seed=args.seed,
         device=args.device,
@@ -107,6 +173,8 @@ def config_from_args(args: argparse.Namespace) -> TrainConfig:
         init_from=args.init_from,
         reward_profile=args.reward_profile,
         observation_profile=args.observation_profile,
+        reward_scale=args.reward_scale,
+        share_features_extractor=not args.separate_value_net,
         learning_rate=args.learning_rate,
         n_steps=args.n_steps,
         batch_size=args.batch_size,

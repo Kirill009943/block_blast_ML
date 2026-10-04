@@ -32,7 +32,10 @@ profiles (``baseline``/``survival``/``lines``/``strategic``) live in
 ``environment/rewards.py``. Every component is returned per step in
 ``info["reward_components"]`` and summed per episode in
 ``info["episode_reward_components"]`` (on termination), so training logs
-show exactly which term the agent is optimizing.
+show exactly which term the agent is optimizing. Components are logged in
+RAW game units; ``reward_scale`` (if set) multiplies only the scalar
+reward the optimizer sees, so component sums may differ from the reward
+by that constant factor.
 
 Determinism: ``env.reset(seed=42)`` reseeds the engine's RNG, so the same
 seed yields the same piece sequence every time.
@@ -228,6 +231,8 @@ class BlockBlastEnv(gym.Env):
                 components["survival"] = cfg.survival_per_move
 
         reward = float(sum(components.values()))
+        if cfg.reward_scale != 1.0:
+            reward *= cfg.reward_scale
         if cfg.reward_clip > 0:
             reward = float(np.clip(reward, -cfg.reward_clip, cfg.reward_clip))
         truncated = False  # game length is not time-limited

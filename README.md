@@ -68,16 +68,64 @@ last reward), `+`/`-` change the AI move delay (default 0.1 s).
 python -m training.train                          # full run (10M steps)
 python -m training.train --timesteps 50000        # quick smoke run
 python -m training.train --timesteps 10000000 --n-envs 16 --seed 42
-python -m training.train --resume models/checkpoints/ppo_block_blast_250000_steps.zip
+python -m training.train --resume models/checkpoints/<run>/ppo_block_blast_250000_steps.zip
 ```
+
+**Timestep semantics.** `--timesteps N` always means *N steps trained in
+this session*. When resuming a 26M-step model, `--timesteps 9000000`
+trains 9M **more** steps (this matches SB3's
+`learn(total_timesteps, reset_num_timesteps=False)`, which adds the
+model's existing counter internally). To target an absolute total instead:
+
+```bash
+# model has 26,371,792 steps -> trains exactly 8,628,208 more
+python -m training.train --resume models/strategic_interrupted.zip \
+    --until-total 35000000 --reward-profile strategic \
+    --observation-profile enhanced --run-name strategic_35M
+```
+
+`--until-total` refuses to run if the model is already past the target.
+SB3 stops at the first full rollout past the session length, so the final
+counter can overshoot the target by up to `n_steps × n_envs` steps.
+
+**`--resume` vs `--init-from`.**
+
+| | `--resume` | `--init-from` |
+|---|---|---|
+| policy weights | kept | copied into a NEW model |
+| optimizer state | kept | fresh |
+| timestep counter | continues | starts at 0 |
+| PPO hyperparameters | from checkpoint | CLI / built-in defaults |
+| rollout buffer | rebuilt fresh (PPO is on-policy) | rebuilt fresh |
+| use it for | continuing the SAME run | starting a NEW regime from an existing policy |
+
+On `--resume`, only `--lr`, `--ent-coef` and `--clip-range` may override
+the checkpoint's values (they are re-read every PPO update); structural
+knobs (`--n-steps`, `--batch-size`, `--gamma`, ...) come from the
+checkpoint and CLI values are ignored with a printed warning. Resuming
+with the wrong `--observation-profile` is rejected with a clear error.
+Changing `--reward-profile` on resume is allowed and is a different
+experiment from `--init-from`: the former keeps the optimizer state that
+was shaped by the old reward, the latter only keeps the policy.
 
 All PPO hyperparameters are CLI-configurable (defaults = the proven
 baseline): `--lr --gamma --gae-lambda --ent-coef --clip-range --n-steps
 --batch-size --n-epochs --vf-coef --max-grad-norm`, plus
 `--reward-profile baseline|survival|lines|strategic` and
-`--observation-profile basic|enhanced`. The full resolved configuration is
-saved to `results/config_<run>.json` together with reproducibility
-metadata (Python/torch/CUDA/SB3 versions, GPU, git commit).
+`--observation-profile basic|enhanced`. Two optional training-stability
+knobs:
+
+* `--reward-scale 0.05` — divides the reward the optimizer sees
+  (component logs stay in raw game units). Use it when the critic cannot
+  fit the returns (symptom: `value_loss` in the thousands, explained
+  variance near 0).
+* `--separate-value-net` — gives policy and value their own CNN instead
+  of sharing one trunk, so a large value gradient cannot starve the
+  policy gradient through shared features.
+
+The full resolved configuration (including effective PPO values and
+session semantics) is saved to `results/config_<run>.json` together with
+reproducibility metadata (Python/torch/CUDA/SB3 versions, GPU, git commit).
 
 The script prints the device it uses:
 
@@ -92,11 +140,18 @@ Outputs:
 |---|---|
 | Final model | `models/<run>_final.zip` |
 | Model saved on Ctrl+C | `models/<run>_interrupted.zip` |
-| Best model (by masked eval) | `models/best/best_model.zip` |
-| Checkpoints | `models/checkpoints/` |
+| Best model (by masked eval) | `models/best/<run>/best_model.zip` |
+| Checkpoints | `models/checkpoints/<run>/` |
 | Per-episode training log | `results/training_log_<run>.csv` |
-| Eval history | `results/eval/evaluations.npz` |
+| Eval history | `results/eval/<run>/evaluations.npz` |
 | TensorBoard | `results/tensorboard/<run>/` |
+
+Best-model and checkpoint directories are **per run**, so a new run never
+overwrites another run's checkpoints. Every 500 episodes the trainer also
+prints a *reward mix* line — each reward component's mean and its share
+of the total reward magnitude over the last 100 episodes — so you can see
+at a glance whether the agent is optimizing line clears or exploiting one
+shaped term.
 
 Progress and stopping: every `--progress-interval` seconds (default 30,
 `0` disables) a `[timer]` line prints steps done, elapsed time, current
@@ -134,6 +189,11 @@ approx KL, losses, explained variance, learning rate), `rollout/*` and
 `eval/*`. Per-update optimizer stats also land in
 `results/metrics_<run>.csv`; per-episode stats with per-component reward
 sums in `results/training_log_<run>.csv`.
+
+Note on `game/valid_actions`: it is the **mean number of legal actions
+over the episode**. (The terminal state's legal-action count is always 0
+by definition of game over; it is kept separately as the
+`final_valid_actions` sanity column in the episode CSV.)
 
 ### Plotting learning progress
 

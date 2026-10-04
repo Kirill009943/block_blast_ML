@@ -30,9 +30,16 @@ single term):
   ``-weight * (regions_after - regions_before)``, clipped to
   ``+/- fragmentation_delta_clip``.
 * ``survival_per_move`` + per move survived.
+* ``reward_scale``    the final per-step reward is multiplied by this
+  factor. Pure PPO value-target scaling: the logged per-component
+  diagnostics stay in raw game units, only the scalar the optimizer
+  sees changes. Use e.g. 0.05 when the critic cannot fit returns of
+  magnitude ~200-300 (symptom: value_loss in the thousands, explained
+  variance near 0). Default 1.0 = no scaling.
 * ``reward_clip``     per-step reward is clipped to ``+/- reward_clip``
   when > 0 (bounds the value targets PPO's critic must fit — the
   unbounded combo spikes are a major driver of return variance).
+  Applied AFTER ``reward_scale``.
 
 Profiles are selected with ``--reward-profile``; ``baseline`` reproduces
 the original training reward exactly.
@@ -61,7 +68,8 @@ class RewardConfig:
     future_moves_delta_clip: float = 3.0  # bound on the weighted component
     fragmentation_delta: float = 0.0  # weight per net new empty region
     fragmentation_delta_clip: float = 3.0  # bound on the weighted component
-    reward_clip: float = 0.0  # per-step clip; 0 disables
+    reward_scale: float = 1.0  # final reward multiplier (PPO value scaling)
+    reward_clip: float = 0.0  # per-step clip after scaling; 0 disables
 
 
 REWARD_PROFILES: Dict[str, RewardConfig] = {
@@ -109,6 +117,17 @@ REWARD_PROFILES: Dict[str, RewardConfig] = {
         survival_per_move=0.1,
         reward_clip=25.0,
     ),
+    "balanced_v2": RewardConfig(
+      place_per_cell=0.5,
+      line=10.0,
+      combo=4.0,
+      game_over=80.0,
+      holes=0.25,
+      fragmentation_delta=0.2,
+      future_moves_delta=0.05,
+      survival_per_move=0.5,
+      reward_clip=25.0,
+  ),
 }
 
 DEFAULT_REWARD_PROFILE = "baseline"

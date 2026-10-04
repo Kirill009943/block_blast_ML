@@ -42,6 +42,7 @@ EPISODE_COLUMNS = (
     "moves",
     "lines_cleared",
     "valid_actions",
+    "final_valid_actions",
     "invalid_termination",
     "holes_mean",
     "regions_mean",
@@ -84,6 +85,7 @@ class EpisodeMetricsCallback(BaseCallback):
         self.episodes = 0
         self._window: Deque[Dict[str, float]] = deque(maxlen=rolling_window)
         self._last_print = 0.0
+        self._last_share_print = 0.0
 
     def _on_step(self) -> bool:
         for done, info in zip(self.locals["dones"], self.locals["infos"]):
@@ -96,6 +98,10 @@ class EpisodeMetricsCallback(BaseCallback):
             # an episode ending with a large negative game_over component
             # after zero moves means an invalid action terminated it
             invalid = bool(info.get("moves", 0) == 0 and info.get("episode_reward", 0) < 0)
+            # "valid_actions" = mean legal actions over the episode (from
+            # board_metrics). info["valid_actions"] at done is the TERMINAL
+            # count — 0 by definition at game over — so it is reported
+            # separately as a sanity column, not as the episode metric.
             board = info.get("board_metrics") or {}
             row = {
                 "timesteps": self.num_timesteps,
@@ -103,7 +109,8 @@ class EpisodeMetricsCallback(BaseCallback):
                 "reward": round(info.get("episode_reward", 0.0), 3),
                 "moves": info.get("moves", 0),
                 "lines_cleared": info.get("lines_cleared", 0),
-                "valid_actions": info.get("valid_actions", 0),
+                "valid_actions": round(board.get("future_moves", 0.0), 2),
+                "final_valid_actions": info.get("valid_actions", 0),
                 "invalid_termination": int(invalid),
                 "holes_mean": round(board.get("holes", 0.0), 3),
                 "regions_mean": round(board.get("regions", 0.0), 3),
@@ -125,7 +132,33 @@ class EpisodeMetricsCallback(BaseCallback):
                     f"  episodes={self.episodes} steps={self.num_timesteps} "
                     f"mean_score={mean['score']:.1f} mean_reward={mean['reward']:.1f}"
                 )
+            if self.episodes % 500 == 0 and now - self._last_share_print > 1.0:
+                self._last_share_print = now
+                print(self._component_share_report())
         return True
+
+    def _component_share_report(self) -> str:
+        """Which reward terms dominate the rolling window, in raw units.
+
+        Each component's share is its magnitude relative to the summed
+        magnitudes of ALL components, so the percentages show what the
+        agent's objective is actually made of (e.g. whether one shaped term
+        has drowned out line clears). Values are raw game units; the
+        optimizer additionally sees them scaled by reward_scale.
+        """
+        n = max(len(self._window), 1)
+        means = {
+            name: sum(r[f"reward_{name}"] for r in self._window) / n
+            for name in REWARD_COMPONENTS
+        }
+        total_abs = sum(abs(v) for v in means.values()) or 1.0
+        ranked = sorted(means.items(), key=lambda kv: -abs(kv[1]))
+        parts = [
+            f"{name}={value:+.2f} ({100 * abs(value) / total_abs:.0f}%)"
+            for name, value in ranked
+            if abs(value) / total_abs >= 0.005  # skip noise terms
+        ]
+        return f"  reward mix (last {len(self._window)} episodes): " + " ".join(parts)
 
     def _rolling_mean(self) -> Dict[str, float]:
         keys = ("score", "reward", "moves", "lines_cleared", "valid_actions",
