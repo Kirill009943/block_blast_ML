@@ -6,7 +6,8 @@ shard index and game id (rebuilt by scanning the shards when missing).
 Each shard holds one or more COMPLETE games. Per-sample arrays (N = number
 of recorded steps in the shard):
 
-    observations      (N, C*8) uint8   bit-packed state BEFORE the action
+    observations      basic: (N, C*8) uint8 bit-packed state BEFORE action
+                      enhanced profiles: (N, C, 8, 8) float32
     actions           (N,) uint8       discrete action id 0..191
     action_masks      (N, 24) uint8    bit-packed legal-action mask
     rewards           (N,) float32     game points gained by the move
@@ -18,10 +19,12 @@ of recorded steps in the shard):
     steps             (N,) int32       move index within the game
     suggested_actions (N,) int16       AI suggestion (feedback mode), -1 = none
 
-Observations and masks are bit-packed with :func:`numpy.packbits` (8x
-smaller than bool arrays; unpacked on load). Games are appended as new
-shards, so datasets grow without rewriting existing data and the recorder
-never holds more than ``flush_games`` complete games in RAM.
+Basic-profile observations and masks are bit-packed with
+:func:`numpy.packbits` (8x smaller than bool arrays; unpacked on load).
+Enhanced observations contain continuous channels, so they are stored as
+float32 arrays. Games are appended as new shards, so datasets grow without
+rewriting existing data and the recorder never holds more than
+``flush_games`` complete games in RAM.
 """
 
 from __future__ import annotations
@@ -115,6 +118,9 @@ class DemoRecorder:
         self.source_code = SOURCE_TO_CODE[source]
         self.observation_profile = observation_profile
         self.channels = observation_channels(observation_profile)
+        self.observation_storage = (
+            "packed_bool" if observation_profile == "basic" else "float32"
+        )
         self.flush_games = flush_games
 
         self._next_shard, self._next_game_id = scan_directory(self.directory)
@@ -155,8 +161,13 @@ class DemoRecorder:
         action_id = encode_action(*action)
         if not mask[action_id]:
             raise ValueError(f"Refusing to record invalid action {action}")
+        stored_obs = (
+            pack_observation(obs)
+            if self.observation_storage == "packed_bool"
+            else obs.astype(np.float32)
+        )
         self._pending = {
-            "observation": pack_observation(obs),
+            "observation": stored_obs,
             "action": action_id,
             "action_mask": _pack(mask[None, :])[0],
             "score_before": int(game.score),
@@ -227,6 +238,7 @@ class DemoRecorder:
             steps=np.asarray([s["step"] for s in samples], dtype=np.int32),
             suggested_actions=np.asarray([s["suggested_action"] for s in samples], dtype=np.int16),
             observation_channels=np.asarray(self.channels, dtype=np.int32),
+            observation_storage=np.asarray(self.observation_storage),
         )
         (self.directory / META_FILE).write_text(json.dumps({
             "next_shard": self._next_shard,
@@ -275,6 +287,11 @@ class DemoDataset:
         for path in self.shard_files:
             with np.load(path) as data:
                 channels = int(data["observation_channels"])
+                storage = (
+                    str(data["observation_storage"].item())
+                    if "observation_storage" in data
+                    else "packed_bool"
+                )
                 keep = (
                     np.isin(data["sources"], list(wanted))
                     if wanted is not None
@@ -282,10 +299,18 @@ class DemoDataset:
                 )
                 if not keep.any():
                     continue
-                unpacked = {
-                    "observations": unpack_observations(
+                if storage == "packed_bool":
+                    observations = unpack_observations(
                         data["observations"][keep], channels
-                    ),
+                    )
+                elif storage == "float32":
+                    observations = data["observations"][keep].astype(np.float32)
+                else:
+                    raise ValueError(
+                        f"Unknown observation storage {storage!r} in {path}"
+                    )
+                unpacked = {
+                    "observations": observations,
                     "action_masks": _unpack(data["action_masks"][keep], 192),
                 }
                 for key in (

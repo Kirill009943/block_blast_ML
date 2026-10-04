@@ -106,6 +106,8 @@ def test_resume_preserves_checkpoint_hyperparameters(tmp_path):
     model.learn(total_timesteps=32)
     path = tmp_path / "ckpt.zip"
     model.save(str(path))
+    optimizer_state = model.policy.optimizer.state_dict()
+    assert optimizer_state["state"], "trained checkpoint should have optimizer state"
     vec.close()
 
     vec2 = _tiny_vec_env()
@@ -114,7 +116,25 @@ def test_resume_preserves_checkpoint_hyperparameters(tmp_path):
     assert loaded.ent_coef == 0.05
     assert loaded.gamma == 0.9
     assert loaded.learning_rate == 1e-4
+    assert loaded.policy.optimizer.state_dict()["state"]
     vec2.close()
+
+
+def test_init_from_policy_starts_fresh_optimizer_and_timestep():
+    vec_source = _tiny_vec_env()
+    source = _tiny_model(vec_source)
+    source.learn(total_timesteps=32)
+    source_state = source.policy.state_dict()
+    assert source.num_timesteps == 32
+    assert source.policy.optimizer.state_dict()["state"]
+    vec_source.close()
+
+    vec_fresh = _tiny_vec_env()
+    fresh = _tiny_model(vec_fresh)
+    fresh.policy.load_state_dict(source_state)
+    assert fresh.num_timesteps == 0
+    assert fresh.policy.optimizer.state_dict()["state"] == {}
+    vec_fresh.close()
 
 
 # ---------------------------------------------------------------------- #

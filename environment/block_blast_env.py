@@ -7,7 +7,9 @@ Selectable via ``observation_profile`` (see ``environment/observations.py``):
 * ``basic``    — ``Box(0, 1, shape=(4, 8, 8), float32)``: board occupancy
   plus one binary channel per piece slot (zeros when the slot is used).
 * ``enhanced`` — 8 channels: basic + column heights, holes, line-completion
-  potential and legal-placement density.
+  potential and merged legal-placement density.
+* ``enhanced_piece_legal`` — 10 channels: enhanced board features plus one
+  legal-placement coverage map per piece slot.
 
 Both are Markovian (functions of board + piece slots only) and feed a CNN
 directly.

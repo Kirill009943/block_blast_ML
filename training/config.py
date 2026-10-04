@@ -31,6 +31,7 @@ import argparse
 from dataclasses import asdict, dataclass, fields
 from typing import Any, Dict, Optional
 
+from environment.observations import OBSERVATION_CHANNELS
 from environment.rewards import REWARD_PROFILES
 
 # Built-in PPO defaults (= the proven 5M baseline configuration behind
@@ -126,7 +127,7 @@ def add_cli_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     run.add_argument("--reward-profile", type=str, default="baseline",
                      choices=sorted(REWARD_PROFILES))
     run.add_argument("--observation-profile", type=str, default="basic",
-                     choices=["basic", "enhanced"])
+                     choices=sorted(OBSERVATION_CHANNELS))
     run.add_argument("--reward-scale", type=float, default=1.0,
                      help="multiply the reward the optimizer sees (component "
                           "logs stay in raw units); e.g. 0.05 when value_loss "

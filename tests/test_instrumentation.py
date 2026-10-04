@@ -81,8 +81,10 @@ def test_strategic_profile_penalizes_holes_and_counts_future_moves():
 def test_observation_profiles_shapes():
     basic = BlockBlastEnv(observation_profile="basic")
     enhanced = BlockBlastEnv(observation_profile="enhanced")
+    enhanced_piece_legal = BlockBlastEnv(observation_profile="enhanced_piece_legal")
     assert basic.reset(seed=0)[0].shape == (4, 8, 8)
     assert enhanced.reset(seed=0)[0].shape == (8, 8, 8)
+    assert enhanced_piece_legal.reset(seed=0)[0].shape == (10, 8, 8)
 
 
 def test_enhanced_channels_are_derived_from_state():

@@ -32,12 +32,8 @@ from typing import Dict, List, Optional
 
 import matplotlib
 
-try:
-    matplotlib.use("TkAgg")  # interactive window when available
-    _INTERACTIVE = True
-except Exception:
-    matplotlib.use("Agg")
-    _INTERACTIVE = False
+matplotlib.use("Agg")
+_INTERACTIVE = False
 
 import matplotlib.pyplot as plt
 import numpy as np

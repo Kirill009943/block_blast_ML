@@ -19,6 +19,12 @@ everything is a function of (board, piece slots) only:
   placements would cover it (normalized to [0, 1]); reuses the engine's
   cached valid-action list, so it costs almost nothing.
 
+``enhanced_piece_legal`` (10 channels) keeps the first seven channels from
+``enhanced`` but replaces the merged legal-placement density with one
+legal-placement coverage map per piece slot:
+
+* ch 7-9: legal-placement coverage for piece slot 0, 1 and 2 respectively.
+
 Selected with ``--observation-profile``. ``basic`` stays the default until
 experiments show the enhanced representation actually helps.
 """
@@ -33,7 +39,11 @@ from game.game import BOARD_SIZE, BlockBlastGame
 from game.utils import column_heights, count_holes
 
 NUM_PIECE_SLOTS = 3
-OBSERVATION_CHANNELS: Dict[str, int] = {"basic": 4, "enhanced": 8}
+OBSERVATION_CHANNELS: Dict[str, int] = {
+    "basic": 4,
+    "enhanced": 8,
+    "enhanced_piece_legal": 10,
+}
 DEFAULT_OBSERVATION_PROFILE = "basic"
 
 
@@ -68,7 +78,7 @@ def build_observation(game: BlockBlastGame, profile: str = "basic") -> np.ndarra
         if piece is not None:
             obs[1 + slot] = piece.mask(BOARD_SIZE)
 
-    if profile == "enhanced":
+    if profile in ("enhanced", "enhanced_piece_legal"):
         size = BOARD_SIZE
         heights = column_heights(game.board).astype(np.float32) / size
         obs[4] = np.broadcast_to(heights, (size, size))
@@ -83,25 +93,50 @@ def build_observation(game: BlockBlastGame, profile: str = "basic") -> np.ndarra
         col_fill = occupied.mean(axis=0, dtype=np.float32)[None, :]
         obs[6] = np.maximum(row_fill, col_fill)
 
-        # legal-placement density via one bincount over all covering cells
-        # (numpy scalar indexing in a Python loop would be ~25x slower)
+        # legal-placement coverage via one bincount over all covering cells
+        # (numpy scalar indexing in a Python loop would be ~25x slower).
+        # The legacy enhanced profile stores one merged map for checkpoint
+        # compatibility. enhanced_piece_legal stores one slot-specific map
+        # to preserve the piece-index/action-index relationship explicitly.
         valid = game.get_valid_actions()  # cached
-        rows = []
-        cols = []
-        for piece_index, row, col in valid:
-            piece = game.pieces[piece_index]
-            if piece is None:
-                continue
-            for r, c in piece.cells:
-                rows.append(row + r)
-                cols.append(col + c)
-        if rows:
-            density = np.bincount(
-                np.asarray(rows) * size + np.asarray(cols),
-                minlength=size * size,
-            ).reshape(size, size).astype(np.float32)
-            if density.max() > 0:
-                density /= density.max()
-            obs[7] = density
+        if profile == "enhanced":
+            rows = []
+            cols = []
+            for piece_index, row, col in valid:
+                piece = game.pieces[piece_index]
+                if piece is None:
+                    continue
+                for r, c in piece.cells:
+                    rows.append(row + r)
+                    cols.append(col + c)
+            if rows:
+                density = np.bincount(
+                    np.asarray(rows) * size + np.asarray(cols),
+                    minlength=size * size,
+                ).reshape(size, size).astype(np.float32)
+                if density.max() > 0:
+                    density /= density.max()
+                obs[7] = density
+        else:
+            for slot in range(NUM_PIECE_SLOTS):
+                rows = []
+                cols = []
+                piece = game.pieces[slot]
+                if piece is None:
+                    continue
+                for piece_index, row, col in valid:
+                    if piece_index != slot:
+                        continue
+                    for r, c in piece.cells:
+                        rows.append(row + r)
+                        cols.append(col + c)
+                if rows:
+                    coverage = np.bincount(
+                        np.asarray(rows) * size + np.asarray(cols),
+                        minlength=size * size,
+                    ).reshape(size, size).astype(np.float32)
+                    if coverage.max() > 0:
+                        coverage /= coverage.max()
+                    obs[7 + slot] = coverage
 
     return obs
