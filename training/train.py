@@ -12,12 +12,18 @@ Examples:
 
 Outputs (for run name ``<run>``):
     models/<run>_final.zip            final model
+    models/<run>_interrupted.zip      model saved on Ctrl+C (stop and save)
     models/best/best_model.zip        best model by masked eval (latest run)
     models/checkpoints/               periodic checkpoints
     results/training_log_<run>.csv    per-episode metrics (dashboard input)
     results/metrics_<run>.csv         per-update PPO optimizer stats
     results/tensorboard/<run>/        tensorboard logs
     results/experiments or results/   config.json with full reproducibility info
+
+Progress: a ``[timer]`` line prints every ``--progress-interval`` seconds
+with steps done, elapsed time, steps/sec and the estimated time remaining.
+Pressing Ctrl+C stops training gracefully and saves the current model to
+``models/<run>_interrupted.zip`` (resume it with ``--resume``).
 """
 
 from __future__ import annotations
@@ -40,7 +46,12 @@ from environment.block_blast_env import BlockBlastEnv
 from environment.rewards import get_reward_config
 from training.cnn_extractor import BlockBlastCNN
 from training.config import TrainConfig, add_cli_args, config_from_args
-from training.metrics import EpisodeMetricsCallback, TrainMetricsCallback
+from training.metrics import (
+    EpisodeMetricsCallback,
+    ProgressTimerCallback,
+    TrainMetricsCallback,
+    format_hms,
+)
 from training.repro import write_config_json
 
 MODELS_DIR = Path("models")
@@ -181,24 +192,41 @@ def train(config: TrainConfig) -> Tuple[Path, str]:
         EpisodeMetricsCallback(RESULTS_DIR / f"training_log_{run_name}.csv"),
         TrainMetricsCallback(RESULTS_DIR / f"metrics_{run_name}.csv"),
     ]
+    if config.progress_interval > 0:
+        callbacks.append(ProgressTimerCallback(config.progress_interval))
 
     started = time.time()
-    model.learn(
-        total_timesteps=config.total_timesteps,
-        callback=callbacks,
-        tb_log_name=run_name,
-        reset_num_timesteps=config.resume is None,
-    )
+    start_steps = model.num_timesteps  # > 0 when resuming
+    interrupted = False
+    try:
+        model.learn(
+            total_timesteps=config.total_timesteps,
+            callback=callbacks,
+            tb_log_name=run_name,
+            reset_num_timesteps=config.resume is None,
+        )
+    except KeyboardInterrupt:
+        interrupted = True
+        print(f"\nTraining interrupted (Ctrl+C) after {model.num_timesteps:,} steps")
     elapsed = time.time() - started
+    session_steps = model.num_timesteps - start_steps
 
-    final_path = MODELS_DIR / f"{run_name}_final.zip"
-    model.save(str(final_path))
+    if interrupted:
+        final_path = MODELS_DIR / f"{run_name}_interrupted.zip"
+        model.save(str(final_path))
+        print(f"  interrupted model saved: {final_path}")
+        print(f"  resume with: python -m training.train "
+              f"--resume {final_path} --timesteps {config.total_timesteps:,}")
+    else:
+        final_path = MODELS_DIR / f"{run_name}_final.zip"
+        model.save(str(final_path))
     vec_env.close()
 
-    print("\nTraining finished")
-    print(f"  wall time:      {elapsed / 60:.1f} min")
-    print(f"  throughput:     {config.total_timesteps / max(elapsed, 1e-9):,.0f} steps/sec")
-    print(f"  final model:    {final_path}")
+    print(f"\nTraining {'interrupted' if interrupted else 'finished'}")
+    print(f"  wall time:      {format_hms(elapsed)} ({elapsed / 60:.1f} min)")
+    print(f"  steps this run: {session_steps:,} (total: {model.num_timesteps:,})")
+    print(f"  throughput:     {session_steps / max(elapsed, 1e-9):,.0f} steps/sec")
+    print(f"  model saved:    {final_path}")
     print(f"  training log:   {RESULTS_DIR / f'training_log_{run_name}.csv'}")
     print(f"  metrics log:    {RESULTS_DIR / f'metrics_{run_name}.csv'}")
     print(f"  tensorboard:    python -m tensorboard.main --logdir results/tensorboard")

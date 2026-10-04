@@ -203,11 +203,51 @@ class TrainMetricsCallback(BaseCallback):
         self.logger.record("performance/fps", fps)
 
 
+def format_hms(seconds: float) -> str:
+    """Format a duration as ``h:mm:ss`` (days folded into hours)."""
+    seconds = max(int(seconds), 0)
+    return f"{seconds // 3600}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
+
+
+class ProgressTimerCallback(BaseCallback):
+    """Prints progress, elapsed time, steps/sec and ETA periodically.
+
+    The rate is measured over the CURRENT session (correct for resumed
+    runs); the percentage/ETA use the model's total timestep count, which
+    SB3 sets to include previously trained steps when resuming.
+    """
+
+    def __init__(self, interval_seconds: float = 30.0):
+        super().__init__()
+        self.interval = interval_seconds
+        self._start_time = 0.0
+        self._start_steps = 0
+        self._last_print = 0.0
+
+    def _on_training_start(self) -> None:
+        self._start_time = time.monotonic()
+        self._start_steps = self.model.num_timesteps
+        self._last_print = 0.0
+
+    def _on_step(self) -> bool:
+        now = time.monotonic()
+        if now - self._last_print < self.interval:
+            return True
+        self._last_print = now
+        done = self.model.num_timesteps
+        total = max(self.model._total_timesteps, 1)
+        elapsed = now - self._start_time
+        rate = (done - self._start_steps) / max(elapsed, 1e-9)
+        remaining = (total - done) / max(rate, 1e-9)
+        print(f"[timer] {done:,}/{total:,} steps ({100 * done / total:.1f}%) | "
+              f"elapsed {format_hms(elapsed)} | ETA {format_hms(remaining)} | "
+              f"{rate:,.0f} steps/s", flush=True)
+        return True
+
+
 def read_episode_log(csv_path: Path) -> List[Dict[str, str]]:
     with Path(csv_path).open() as f:
         return list(csv.DictReader(f))
-
-
 def read_metrics_log(csv_path: Path) -> List[Dict[str, str]]:
     with Path(csv_path).open() as f:
         return list(csv.DictReader(f))

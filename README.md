@@ -91,11 +91,19 @@ Outputs:
 | What | Where |
 |---|---|
 | Final model | `models/<run>_final.zip` |
+| Model saved on Ctrl+C | `models/<run>_interrupted.zip` |
 | Best model (by masked eval) | `models/best/best_model.zip` |
 | Checkpoints | `models/checkpoints/` |
 | Per-episode training log | `results/training_log_<run>.csv` |
 | Eval history | `results/eval/evaluations.npz` |
 | TensorBoard | `results/tensorboard/<run>/` |
+
+Progress and stopping: every `--progress-interval` seconds (default 30,
+`0` disables) a `[timer]` line prints steps done, elapsed time, current
+steps/sec and the estimated time remaining. Pressing **Ctrl+C** stops
+training gracefully and saves the current model to
+`models/<run>_interrupted.zip` — resume it with
+`python -m training.train --resume models/<run>_interrupted.zip --timesteps ...`.
 
 Training runs fully headless in 8 parallel environments
 (`SubprocVecEnv`) at roughly 2,500–3,000 steps/sec on a desktop CPU+GPU;

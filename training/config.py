@@ -28,6 +28,7 @@ class TrainConfig:
     checkpoint_freq: int = 100_000
     eval_freq: int = 50_000
     eval_episodes: int = 20
+    progress_interval: float = 30.0  # seconds between [timer] ETA lines; 0 = off
     resume: Optional[str] = None
     init_from: Optional[str] = None  # e.g. behavior-cloned policy weights
     reward_profile: str = "baseline"
@@ -65,6 +66,8 @@ def add_cli_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     run.add_argument("--checkpoint-freq", type=int, default=100_000)
     run.add_argument("--eval-freq", type=int, default=50_000)
     run.add_argument("--eval-episodes", type=int, default=20)
+    run.add_argument("--progress-interval", type=float, default=30.0,
+                     help="seconds between [timer] progress/ETA lines (0 = off)")
     run.add_argument("--resume", type=str, default=None,
                      help="checkpoint to continue training from")
     run.add_argument("--init-from", type=str, default=None,
@@ -99,6 +102,7 @@ def config_from_args(args: argparse.Namespace) -> TrainConfig:
         checkpoint_freq=args.checkpoint_freq,
         eval_freq=args.eval_freq,
         eval_episodes=args.eval_episodes,
+        progress_interval=args.progress_interval,
         resume=args.resume,
         init_from=args.init_from,
         reward_profile=args.reward_profile,
